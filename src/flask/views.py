@@ -180,6 +180,11 @@ class MethodView(View):
                 cls.methods = methods
 
     def dispatch_request(self, **kwargs: t.Any) -> ft.ResponseReturnValue:
+        """Resolve the HTTP method to the corresponding class method and invoke it.
+
+        Subclasses map HTTP methods (such as ``get``, ``post``, etc.) to lowercase
+        method names on the view instance.
+        """
         meth = getattr(self, request.method.lower(), None)
 
         # If the request method is HEAD and we don't have a handler for it
