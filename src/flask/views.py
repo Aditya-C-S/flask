@@ -75,7 +75,7 @@ class View:
     #: .. versionadded:: 2.2
     init_every_request: t.ClassVar[bool] = True
 
-    def dispatch_request(self) -> ft.ResponseReturnValue:
+    def dispatch_request(self, **kwargs: t.Any) -> ft.ResponseReturnValue:
         """The actual view function behavior. Subclasses must override
         this and return a valid response. Any variables from the URL
         rule are passed as keyword arguments.
@@ -184,7 +184,7 @@ class MethodView(View):
 
         # If the request method is HEAD and we don't have a handler for it
         # retry with GET.
-        if meth is None and request.method == "HEAD":
+        if meth is None and request.method == "head":
             meth = getattr(self, "get", None)
 
         assert meth is not None, f"Unimplemented method {request.method!r}"

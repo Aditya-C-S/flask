@@ -424,7 +424,7 @@ class Scaffold:
 
         If ``view_func`` has a ``required_methods`` attribute, those
         methods are added to the passed and automatic methods. If it
-        has a ``provide_automatic_methods`` attribute, it is used as the
+        has a ``provide_automatic_options`` attribute, it is used as the
         default if the parameter is not passed.
 
         :param rule: The URL rule string.
