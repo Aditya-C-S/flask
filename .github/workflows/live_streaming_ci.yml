@@ -172,17 +172,12 @@ jobs:
           # Controlled Failure Injections (without modifying original Flask code)
           if [ "$FAIL_STAGE" = "syntax" ]; then
             echo "--- [Controlled Demo Injection] Injecting Python syntax failure ---"
-            cat << 'EOF' > tests/test_demo_syntax_failure.py
-# Controlled demonstration syntax error: unclosed parenthesis
-def test_demo_syntax_error(:
-    pass
-EOF
+            echo "def test_demo_syntax_error(:" > tests/test_demo_syntax_failure.py
+            echo "    pass" >> tests/test_demo_syntax_failure.py
           elif [ "$FAIL_STAGE" = "pytest" ] || [ "$INJECT_FLAG" = "true" ] || [ "$INJECT_FLAG" = "1" ]; then
             echo "--- [Controlled Demo Injection] Injecting pytest assertion failure ---"
-            cat << 'EOF' > tests/test_demo_injected_failure.py
-def test_injected_demo_failure():
-    assert False, "Injected demonstration failure for CI/CD Failure Predictor RCA validation"
-EOF
+            echo "def test_injected_demo_failure():" > tests/test_demo_injected_failure.py
+            echo "    assert False, 'Injected demonstration failure for CI/CD Failure Predictor RCA validation'" >> tests/test_demo_injected_failure.py
           fi
 
           set +e
