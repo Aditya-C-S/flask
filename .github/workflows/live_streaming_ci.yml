@@ -1,0 +1,297 @@
+name: Flask Live CI/CD Streaming Pipeline
+
+"on":
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      failure_stage:
+        description: 'Controlled failure injection stage (none, dependency, syntax, pytest)'
+        required: false
+        default: 'none'
+        type: choice
+        options:
+          - none
+          - dependency
+          - syntax
+          - pytest
+      demo_run_id:
+        description: 'Active Demo Run ID from CI/CD Predictor Dashboard'
+        required: false
+        default: 'demo_run_manual'
+        type: string
+      demo_pacing:
+        description: 'Paced demonstration mode (batches tests with pauses for visual live UI observation)'
+        required: false
+        default: false
+        type: boolean
+      inject_failure:
+        description: 'Legacy switch: Inject controlled failure (true=pytest failure, false=none)'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  flask-live-stream:
+    runs-on: ubuntu-latest
+    env:
+      BACKEND_URL: ${{ secrets.BACKEND_URL || 'http://127.0.0.1:8000' }}
+      DEMO_RUN_ID: ${{ inputs.demo_run_id || secrets.DEMO_RUN_ID || '' }}
+      DEMO_API_KEY: ${{ secrets.DEMO_API_KEY }}
+      API_KEY: ${{ secrets.DEMO_API_KEY }}
+      REPO: ${{ github.repository }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      COMMIT_SHA: ${{ github.sha }}
+      GITHUB_SHA: ${{ github.sha }}
+      BRANCH: ${{ github.ref_name }}
+      GITHUB_REF_NAME: ${{ github.ref_name }}
+      GHA_RUN_ID: ${{ github.run_id }}
+      GITHUB_RUN_ID: ${{ github.run_id }}
+      GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+      PYTHONPATH: src
+      FAILURE_STAGE: ${{ inputs.failure_stage || 'none' }}
+
+    steps:
+      - name: 1. Checkout Flask Repository
+        uses: actions/checkout@v4
+
+      - name: 2. Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 2.5 Initialize Predictor Run Handshake
+        id: init_run
+        if: always()
+        run: |
+          python3 scripts/report_checkpoint.py --init-run
+
+      - name: 3. Capture & Stream Checkpoint 25% (Environment Setup)
+        if: always()
+        run: |
+          mkdir -p /tmp/ci_logs
+          LOG_FILE="/tmp/ci_logs/01_env.log"
+          {
+            echo "##[group]Flask Runner Environment Initialization"
+            echo "Runner Image Provisioner: GitHub Actions Hosted Compute Agent"
+            echo "Image: ubuntu-latest (actions/setup-python@v5, actions/checkout@v4)"
+            echo "Image Release: https://github.com/actions/runner-images"
+            echo "OS: $(uname -srmo 2>/dev/null || echo 'Ubuntu Linux')"
+            echo "Runner Kernel: $(uname -v 2>/dev/null || echo 'Linux')"
+            echo "Python: $(python3 --version 2>&1)"
+            echo "Pip: $(pip --version 2>&1)"
+            echo "Repository: ${REPO}"
+            echo "Commit: ${COMMIT_SHA}"
+            echo "Branch: ${BRANCH}"
+            echo "GitHub Actions Run ID: ${GHA_RUN_ID}"
+            echo "Run Attempt: ${GITHUB_RUN_ATTEMPT}"
+            echo "Workflow Dispatch Demo Run ID: ${DEMO_RUN_ID}"
+            echo "##[endgroup]"
+          } 2>&1 | tee "$LOG_FILE"
+
+          python3 scripts/report_checkpoint.py \
+            --depth 25 \
+            --is-milestone \
+            --step-name "Environment Initialization" \
+            --stage "setup" \
+            --step-outcome "success" \
+            --exit-code 0 \
+            --log-file "$LOG_FILE"
+
+      - name: 4. Install Flask & Dependencies
+        id: install_step
+        run: |
+          mkdir -p /tmp/ci_logs
+          LOG_FILE="/tmp/ci_logs/02_install.log"
+          rm -f "$LOG_FILE"
+
+          echo "=== Stage: Dependency Installation & Package Resolution ===" | tee -a "$LOG_FILE"
+
+          # Controlled Dependency Failure Injection
+          if [ "$FAILURE_STAGE" = "dependency" ]; then
+            echo "--- [Controlled Demo Injection] Simulating unresolvable package requirement failure ---" | tee -a "$LOG_FILE"
+            pip install --no-cache-dir "demo-unresolved-dependency-pkg==99.99.99" 2>&1 | tee -a "$LOG_FILE"
+            PIP_INSTALL_EC=${PIPESTATUS[0]}
+            echo "##[error] Requirements installation failed with exit code $PIP_INSTALL_EC" | tee -a "$LOG_FILE"
+            exit $PIP_INSTALL_EC
+          fi
+
+          echo "--- [1/2] Upgrading pip ---" | tee -a "$LOG_FILE"
+          python -m pip install --upgrade pip 2>&1 | tee -a "$LOG_FILE"
+          PIP_UPGRADE_EC=${PIPESTATUS[0]}
+          if [ $PIP_UPGRADE_EC -ne 0 ]; then
+            echo "##[error] Pip upgrade failed with exit code $PIP_UPGRADE_EC" | tee -a "$LOG_FILE"
+            exit $PIP_UPGRADE_EC
+          fi
+
+          echo "--- [2/2] Installing Flask in Editable Mode with Pytest & Async Extra ---" | tee -a "$LOG_FILE"
+          pip install -e .[async] pytest 2>&1 | tee -a "$LOG_FILE"
+          PIP_INSTALL_EC=${PIPESTATUS[0]}
+          if [ $PIP_INSTALL_EC -ne 0 ]; then
+            echo "##[error] Flask installation failed with exit code $PIP_INSTALL_EC" | tee -a "$LOG_FILE"
+            exit $PIP_INSTALL_EC
+          fi
+
+          echo "=== Installed Packages Summary ===" | tee -a "$LOG_FILE"
+          pip list --format=freeze | grep -E 'Flask|Werkzeug|Jinja2|click|blinker|itsdangerous|markupsafe|pytest|asgiref' | tee -a "$LOG_FILE" || pip list --format=freeze | head -n 10 | tee -a "$LOG_FILE"
+          echo "Dependency installation completed successfully." | tee -a "$LOG_FILE"
+
+      - name: 5. Stream Checkpoint 50% (Dependency Resolution Milestone)
+        if: always()
+        run: |
+          STEP_OUTCOME="${{ steps.install_step.outcome }}"
+          EXIT_CODE=0
+          if [ "$STEP_OUTCOME" != "success" ]; then EXIT_CODE=1; fi
+
+          python3 scripts/report_checkpoint.py \
+            --depth 50 \
+            --is-milestone \
+            --step-name "Dependency Installation" \
+            --stage "build" \
+            --exit-code "$EXIT_CODE" \
+            --step-outcome "$STEP_OUTCOME" \
+            --log-file /tmp/ci_logs/02_install.log
+
+      - name: 6. Execute Genuine Flask Tests with Continuous Log Streaming
+        id: run_tests
+        if: steps.install_step.outcome == 'success'
+        run: |
+          INJECT_FLAG="${{ inputs.inject_failure }}"
+          PACED_FLAG="${{ inputs.demo_pacing }}"
+          FAIL_STAGE="${{ inputs.failure_stage }}"
+
+          # Setup trap to clean up any injected test files on step exit
+          cleanup() {
+            rm -f tests/test_demo_syntax_failure.py tests/test_demo_injected_failure.py
+          }
+          trap cleanup EXIT
+
+          # Controlled Failure Injections (without modifying original Flask code)
+          if [ "$FAIL_STAGE" = "syntax" ]; then
+            echo "--- [Controlled Demo Injection] Injecting Python syntax failure ---"
+            cat << 'EOF' > tests/test_demo_syntax_failure.py
+# Controlled demonstration syntax error: unclosed parenthesis
+def test_demo_syntax_error(:
+    pass
+EOF
+          elif [ "$FAIL_STAGE" = "pytest" ] || [ "$INJECT_FLAG" = "true" ] || [ "$INJECT_FLAG" = "1" ]; then
+            echo "--- [Controlled Demo Injection] Injecting pytest assertion failure ---"
+            cat << 'EOF' > tests/test_demo_injected_failure.py
+def test_injected_demo_failure():
+    assert False, "Injected demonstration failure for CI/CD Failure Predictor RCA validation"
+EOF
+          fi
+
+          set +e
+          if [ "$PACED_FLAG" = "true" ]; then
+            echo "--- Paced Demonstration Mode Active: Running Flask tests with observation pauses ---"
+            python3 -u scripts/log_forwarder.py \
+              --step-name "Flask Pytest Test Suite (Paced)" \
+              --stage "test" \
+              --max-lines 25 \
+              --max-seconds 3.0 \
+              -- bash -c "
+                set -e
+                echo '=== Batch 1/3: Core Application Tests ==='
+                pytest tests/test_basic.py tests/test_cli.py -v --tb=short
+                echo '=== Pausing 4s for live stream observation ==='
+                sleep 4
+                echo '=== Batch 2/3: Views, Signals & Helpers ==='
+                pytest tests/test_views.py tests/test_signals.py tests/test_helpers.py -v --tb=short
+                echo '=== Pausing 4s for live stream observation ==='
+                sleep 4
+                echo '=== Batch 3/3: Configuration & Logging ==='
+                pytest tests/test_config.py tests/test_logging.py -v --tb=short
+              "
+            TEST_EC=$?
+          else
+            echo "--- Full Test Suite Mode: Running genuine Flask pytest suite ---"
+            python3 -u scripts/log_forwarder.py \
+              --step-name "Flask Pytest Test Suite" \
+              --stage "test" \
+              --max-lines 25 \
+              --max-seconds 3.0 \
+              -- pytest tests/ -v --tb=short
+            TEST_EC=$?
+          fi
+
+          echo "$TEST_EC" > /tmp/test_exit_code.txt
+          exit $TEST_EC
+
+      - name: 7. Stream Checkpoint 75% (Core Tests Milestone)
+        if: always()
+        run: |
+          TEST_OUTCOME="${{ steps.run_tests.outcome }}"
+          TEST_EC=0
+          if [ -f /tmp/test_exit_code.txt ]; then
+            TEST_EC=$(cat /tmp/test_exit_code.txt)
+          elif [ "$TEST_OUTCOME" != "success" ]; then
+            TEST_EC=1
+          fi
+
+          if [ "$TEST_OUTCOME" = "success" ]; then
+            MSG="Core Flask tests executed successfully."
+          elif [ "$TEST_OUTCOME" = "skipped" ]; then
+            MSG="Core Flask tests were SKIPPED because dependency installation failed."
+          else
+            MSG="Core Flask tests FAILED with exit code $TEST_EC."
+          fi
+
+          python3 scripts/report_checkpoint.py \
+            --depth 75 \
+            --is-milestone \
+            --step-name "Test Suite Execution" \
+            --stage "test" \
+            --exit-code "$TEST_EC" \
+            --step-outcome "$TEST_OUTCOME" \
+            --fallback-msg "$MSG"
+
+      - name: 8. Stream Checkpoint 100% Final & Trigger Parser V2 / RCA
+        if: always()
+        run: |
+          INIT_OUTCOME="${{ steps.init_run.outcome }}"
+          INSTALL_OUTCOME="${{ steps.install_step.outcome }}"
+          TEST_OUTCOME="${{ steps.run_tests.outcome }}"
+
+          TEST_EC=0
+          if [ -f /tmp/test_exit_code.txt ]; then
+            TEST_EC=$(cat /tmp/test_exit_code.txt)
+          elif [ "$TEST_OUTCOME" != "success" ]; then
+            TEST_EC=1
+          fi
+
+          # Strict Workflow Outcome Resolution:
+          # ALL required stages (init, install, test) must be 'success'.
+          # Any failure, cancellation, or skip results in FAILURE.
+          if [ "$INIT_OUTCOME" = "success" ] && [ "$INSTALL_OUTCOME" = "success" ] && [ "$TEST_OUTCOME" = "success" ]; then
+            WORKFLOW_OUTCOME="success"
+            FINAL_STEP_OUTCOME="success"
+            FINAL_EXIT_CODE=0
+            MSG="Flask CI Pipeline completed successfully (all stages passed)."
+          else
+            WORKFLOW_OUTCOME="failure"
+            FINAL_STEP_OUTCOME="failure"
+            FINAL_EXIT_CODE=${TEST_EC:-1}
+            if [ "$FINAL_EXIT_CODE" -eq 0 ]; then FINAL_EXIT_CODE=1; fi
+            MSG="Flask CI Pipeline FAILED (init: $INIT_OUTCOME, install: $INSTALL_OUTCOME, test: $TEST_OUTCOME)."
+          fi
+
+          python3 scripts/report_checkpoint.py \
+            --depth 100 \
+            --is-milestone \
+            --is-final \
+            --step-name "Pipeline Finalization" \
+            --stage "test" \
+            --exit-code "$FINAL_EXIT_CODE" \
+            --step-outcome "$FINAL_STEP_OUTCOME" \
+            --workflow-outcome "$WORKFLOW_OUTCOME" \
+            --fallback-msg "$MSG"
+
+          # Ensure the GHA runner job reflects actual workflow outcome
+          if [ "$WORKFLOW_OUTCOME" != "success" ]; then
+            echo "CI pipeline completed with failure. Exiting with $FINAL_EXIT_CODE."
+            exit "$FINAL_EXIT_CODE"
+          fi
