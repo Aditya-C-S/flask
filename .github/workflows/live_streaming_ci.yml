@@ -2,7 +2,7 @@ name: Flask Live CI/CD Streaming Pipeline
 
 "on":
   push:
-    branches: [ main ]
+    branches: [ main, "demo/*" ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -161,7 +161,12 @@ jobs:
         run: |
           INJECT_FLAG="${{ inputs.inject_failure }}"
           PACED_FLAG="${{ inputs.demo_pacing }}"
-          FAIL_STAGE="${{ inputs.failure_stage }}"
+          FAIL_STAGE="${{ inputs.failure_stage || 'none' }}"
+
+          # Automatically enable pacing for demo branch runs if not explicitly set
+          if [ -z "$PACED_FLAG" ] && [[ "${{ github.ref_name }}" == demo/* ]]; then
+            PACED_FLAG="true"
+          fi
 
           # Setup trap to clean up any injected test files on step exit
           cleanup() {
@@ -179,6 +184,9 @@ jobs:
             echo "def test_injected_demo_failure():" > tests/test_demo_injected_failure.py
             echo "    assert False, 'Injected demonstration failure for CI/CD Failure Predictor RCA validation'" >> tests/test_demo_injected_failure.py
           fi
+
+          # Discover any injected test files to execute alongside standard test batches
+          DEMO_TESTS=$(ls tests/test_demo_*.py 2>/dev/null || true)
 
           set +e
           if [ "$PACED_FLAG" = "true" ]; then
@@ -199,7 +207,7 @@ jobs:
                 echo '=== Pausing 4s for live stream observation ==='
                 sleep 4
                 echo '=== Batch 3/3: Configuration & Logging ==='
-                pytest tests/test_config.py tests/test_logging.py -v --tb=short
+                pytest tests/test_config.py tests/test_logging.py $DEMO_TESTS -v --tb=short
               "
             TEST_EC=$?
           else
